@@ -3,8 +3,12 @@ import { after, before, test } from "node:test";
 import { eq, inArray } from "drizzle-orm";
 import {
   authSessionsTable,
+  assignmentsTable,
+  coursesTable,
   db,
   departmentsTable,
+  facultyTable,
+  feeRecordsTable,
   permissionsTable,
   rolePermissionsTable,
   rolesTable,
@@ -105,10 +109,24 @@ async function seedDatabase(): Promise<void> {
     module: "students",
     action: "manage",
   }).returning({ id: permissionsTable.id });
+  const [facultyView] = await db.insert(permissionsTable).values({
+    key: "faculty.view",
+    displayName: "View faculty",
+    module: "faculty",
+    action: "view",
+  }).returning({ id: permissionsTable.id });
+  const [facultyManage] = await db.insert(permissionsTable).values({
+    key: "faculty.manage",
+    displayName: "Manage faculty",
+    module: "faculty",
+    action: "manage",
+  }).returning({ id: permissionsTable.id });
 
   await db.insert(rolePermissionsTable).values([
     { roleId: adminRole.id, permissionId: studentsView.id },
     { roleId: adminRole.id, permissionId: studentsManage.id },
+    { roleId: adminRole.id, permissionId: facultyView.id },
+    { roleId: adminRole.id, permissionId: facultyManage.id },
     { roleId: studentRole.id, permissionId: studentsView.id },
   ]);
 
@@ -197,7 +215,7 @@ test("valid login creates a database-backed session", async () => {
   assert.equal(result.user.role, "admin");
   assert.deepEqual(
     [...(result.user.permissions as string[])].sort(),
-    ["students.manage", "students.view"],
+    ["faculty.manage", "faculty.view", "students.manage", "students.view"],
   );
 
   const sessions = await db
@@ -304,6 +322,9 @@ test("authorized Student CRUD persists through the database", async () => {
   const createdId = created.id as number;
   const createdUserId = created.userId as number;
   assert.equal(created.rollNumber, "T3B-CREATED");
+  assert.equal(created.registrationNumber, `REG-2026-${String(createdId).padStart(5, "0")}`);
+  assert.equal(created.studentId, `STU-${String(createdId).padStart(6, "0")}`);
+  assert.equal(created.status, "active");
 
   const persisted = await db
     .select({ id: studentsTable.id, userId: studentsTable.userId })
@@ -332,6 +353,59 @@ test("authorized Student CRUD persists through the database", async () => {
   assert.deepEqual(updatedUser, [{ name: "Updated Test Student" }]);
   assert.deepEqual(updatedStudent, [{ address: "Updated Address" }]);
 
+  const duplicateEmailResponse = await server!.request(`/students/${createdId}`, {
+    method: "PATCH",
+    headers: { ...auth(token), "content-type": "application/json" },
+    body: JSON.stringify({ email: "alice.task3b@example.test" }),
+  });
+  assert.equal(duplicateEmailResponse.status, 409);
+
+  const inactiveResponse = await server!.request(`/students/${createdId}`, {
+    method: "PATCH",
+    headers: { ...auth(token), "content-type": "application/json" },
+    body: JSON.stringify({ isActive: false, phone: null }),
+  });
+  assert.equal(inactiveResponse.status, 200);
+  assert.equal((await jsonBody(inactiveResponse)).status, "inactive");
+  const inactiveUser = await db
+    .select({ phone: usersTable.phone, isActive: usersTable.isActive })
+    .from(usersTable)
+    .where(eq(usersTable.id, createdUserId));
+  const inactiveStudent = await db
+    .select({ isActive: studentsTable.isActive })
+    .from(studentsTable)
+    .where(eq(studentsTable.id, createdId));
+  assert.deepEqual(inactiveUser, [{ phone: null, isActive: false }]);
+  assert.deepEqual(inactiveStudent, [{ isActive: false }]);
+
+  const inactiveListResponse = await server!.request("/students?status=inactive", {
+    headers: auth(token),
+  });
+  assert.equal(inactiveListResponse.status, 200);
+  assert.ok(
+    ((await jsonBody(inactiveListResponse)).data as Array<{ id: number }>).some((row) => row.id === createdId),
+  );
+
+  await db.insert(feeRecordsTable).values({
+    studentId: createdId,
+    semesterId,
+    amount: "100.00",
+    dueDate: "2026-03-01",
+  });
+  const blockedDeleteResponse = await server!.request(`/students/${createdId}`, {
+    method: "DELETE",
+    headers: auth(token),
+  });
+  assert.equal(blockedDeleteResponse.status, 409);
+  assert.deepEqual(await jsonBody(blockedDeleteResponse), {
+    error: "Student has linked academic records and cannot be deleted",
+  });
+  assert.deepEqual(
+    await db.select({ id: studentsTable.id }).from(studentsTable).where(eq(studentsTable.id, createdId)),
+    [{ id: createdId }],
+  );
+
+  await db.delete(feeRecordsTable).where(eq(feeRecordsTable.studentId, createdId));
   const deleteResponse = await server!.request(`/students/${createdId}`, {
     method: "DELETE",
     headers: auth(token),
@@ -343,6 +417,136 @@ test("authorized Student CRUD persists through the database", async () => {
     .from(studentsTable)
     .where(eq(studentsTable.id, createdId));
   assert.deepEqual(deleted, []);
+  const deletedUser = await db
+    .select({ isActive: usersTable.isActive })
+    .from(usersTable)
+    .where(eq(usersTable.id, createdUserId));
+  assert.deepEqual(deletedUser, [{ isActive: false }]);
+  const deletedLoginResponse = await loginRequest("created.task3b@example.test", "CreatedPassword123");
+  assert.equal(deletedLoginResponse.status, 401);
+});
+
+test("authorized Faculty CRUD persists and synchronizes account state", async () => {
+  const { token } = await login("admin.task3b@example.test", adminPassword);
+  const createResponse = await server!.request("/faculty", {
+    method: "POST",
+    headers: { ...auth(token), "content-type": "application/json" },
+    body: JSON.stringify({
+      name: "Created Test Faculty",
+      email: "created-faculty.task5@example.test",
+      password: "CreatedFacultyPassword123",
+      employeeId: "T5-FACULTY",
+      departmentId,
+      designation: "Lecturer",
+      joiningDate: "2026-02-01",
+      phone: "555-0100",
+    }),
+  });
+  assert.equal(createResponse.status, 201);
+  const created = await jsonBody(createResponse);
+  const facultyId = created.id as number;
+  const userId = created.userId as number;
+
+  const updateResponse = await server!.request(`/faculty/${facultyId}`, {
+    method: "PATCH",
+    headers: { ...auth(token), "content-type": "application/json" },
+    body: JSON.stringify({ isActive: false, phone: null, qualification: "PhD" }),
+  });
+  assert.equal(updateResponse.status, 200);
+  const updated = await jsonBody(updateResponse);
+  assert.equal(updated.isActive, false);
+  assert.equal(updated.phone, null);
+  assert.equal(updated.qualification, "PhD");
+
+  assert.deepEqual(
+    await db.select({ phone: usersTable.phone, isActive: usersTable.isActive }).from(usersTable).where(eq(usersTable.id, userId)),
+    [{ phone: null, isActive: false }],
+  );
+  assert.deepEqual(
+    await db.select({ isActive: facultyTable.isActive }).from(facultyTable).where(eq(facultyTable.id, facultyId)),
+    [{ isActive: false }],
+  );
+
+  const [course] = await db.insert(coursesTable).values({
+    name: "Faculty Delete Guard",
+    code: "T5-FAC-COURSE",
+    departmentId,
+    semesterId,
+    facultyId,
+  }).returning({ id: coursesTable.id });
+  const [assignment] = await db.insert(assignmentsTable).values({
+    title: "Faculty Delete Guard Assignment",
+    courseId: course.id,
+    facultyId,
+    dueDate: "2026-03-01",
+  }).returning({ id: assignmentsTable.id });
+
+  const blockedDeleteResponse = await server!.request(`/faculty/${facultyId}`, {
+    method: "DELETE",
+    headers: auth(token),
+  });
+  assert.equal(blockedDeleteResponse.status, 409);
+  assert.deepEqual(await jsonBody(blockedDeleteResponse), {
+    error: "Faculty member has linked records and cannot be deleted",
+  });
+  assert.deepEqual(
+    await db.select({ id: facultyTable.id }).from(facultyTable).where(eq(facultyTable.id, facultyId)),
+    [{ id: facultyId }],
+  );
+
+  await db.delete(assignmentsTable).where(eq(assignmentsTable.id, assignment.id));
+  await db.delete(coursesTable).where(eq(coursesTable.id, course.id));
+  const deleteResponse = await server!.request(`/faculty/${facultyId}`, {
+    method: "DELETE",
+    headers: auth(token),
+  });
+  assert.equal(deleteResponse.status, 204);
+  assert.deepEqual(
+    await db.select({ id: facultyTable.id }).from(facultyTable).where(eq(facultyTable.id, facultyId)),
+    [],
+  );
+  assert.deepEqual(
+    await db.select({ isActive: usersTable.isActive }).from(usersTable).where(eq(usersTable.id, userId)),
+    [{ isActive: false }],
+  );
+});
+
+test("Student and Faculty APIs reject invalid inputs and unsupported status filters", async () => {
+  const { token } = await login("admin.task3b@example.test", adminPassword);
+  const invalidStudent = await server!.request("/students", {
+    method: "POST",
+    headers: { ...auth(token), "content-type": "application/json" },
+    body: JSON.stringify({
+      name: "Invalid Student",
+      email: "not-an-email",
+      password: "short",
+      rollNumber: "T5-INVALID",
+      departmentId,
+      semesterId,
+      admissionDate: "2026-02-01",
+    }),
+  });
+  assert.equal(invalidStudent.status, 400);
+
+  const invalidFaculty = await server!.request("/faculty", {
+    method: "POST",
+    headers: { ...auth(token), "content-type": "application/json" },
+    body: JSON.stringify({
+      name: "Invalid Faculty",
+      email: "faculty-invalid",
+      password: "short",
+      employeeId: "T5-INVALID-FAC",
+      departmentId,
+      designation: "Lecturer",
+      joiningDate: "2026-02-01",
+    }),
+  });
+  assert.equal(invalidFaculty.status, 400);
+
+  const invalidStatus = await server!.request("/students?status=unknown", {
+    headers: auth(token),
+  });
+  assert.equal(invalidStatus.status, 400);
 });
 
 test("wrong passwords and unknown users are rejected by database-backed login", async () => {

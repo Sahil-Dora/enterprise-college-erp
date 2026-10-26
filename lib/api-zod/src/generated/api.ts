@@ -497,12 +497,17 @@ export const DeleteCourseResponse = zod.void()
 /**
  * @summary List students
  */
+export const listStudentsQueryLimitMax = 100;
+
+
+
 export const ListStudentsQueryParams = zod.object({
   "departmentId": zod.coerce.number().optional(),
   "semesterId": zod.coerce.number().optional(),
   "search": zod.coerce.string().optional(),
   "page": zod.coerce.number().optional(),
-  "limit": zod.coerce.number().optional()
+  "limit": zod.coerce.number().min(1).max(listStudentsQueryLimitMax).optional(),
+  "status": zod.enum(['active', 'inactive', 'alumni']).optional()
 })
 
 export const ListStudentsResponse = zod.object({
@@ -524,6 +529,9 @@ export const ListStudentsResponse = zod.object({
   "guardianName": zod.string().nullish(),
   "guardianPhone": zod.string().nullish(),
   "isActive": zod.boolean().optional(),
+  "registrationNumber": zod.string(),
+  "studentId": zod.string(),
+  "status": zod.enum(['active', 'inactive']),
   "createdAt": zod.string()
 })),
   "total": zod.number(),
@@ -535,19 +543,26 @@ export const ListStudentsResponse = zod.object({
 /**
  * @summary Create student
  */
+
+export const createStudentBodyEmailRegExp = new RegExp('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$');
+export const createStudentBodyPasswordMin = 8;
+
+
+
+
 export const CreateStudentBody = zod.object({
-  "name": zod.string(),
-  "email": zod.string(),
-  "password": zod.string(),
-  "rollNumber": zod.string(),
+  "name": zod.string().min(1),
+  "email": zod.string().regex(createStudentBodyEmailRegExp),
+  "password": zod.string().min(createStudentBodyPasswordMin),
+  "rollNumber": zod.string().min(1),
   "departmentId": zod.number(),
   "semesterId": zod.number(),
   "admissionDate": zod.string(),
-  "dateOfBirth": zod.string().optional(),
-  "phone": zod.string().optional(),
-  "address": zod.string().optional(),
-  "guardianName": zod.string().optional(),
-  "guardianPhone": zod.string().optional()
+  "dateOfBirth": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "address": zod.string().nullish(),
+  "guardianName": zod.string().nullish(),
+  "guardianPhone": zod.string().nullish()
 })
 
 export const CreateStudentResponse = zod.object({
@@ -568,6 +583,9 @@ export const CreateStudentResponse = zod.object({
   "guardianName": zod.string().nullish(),
   "guardianPhone": zod.string().nullish(),
   "isActive": zod.boolean().optional(),
+  "registrationNumber": zod.string(),
+  "studentId": zod.string(),
+  "status": zod.enum(['active', 'inactive']),
   "createdAt": zod.string()
 })
 
@@ -597,6 +615,9 @@ export const GetStudentResponse = zod.object({
   "guardianName": zod.string().nullish(),
   "guardianPhone": zod.string().nullish(),
   "isActive": zod.boolean().optional(),
+  "registrationNumber": zod.string(),
+  "studentId": zod.string(),
+  "status": zod.enum(['active', 'inactive']),
   "createdAt": zod.string()
 })
 
@@ -608,18 +629,22 @@ export const UpdateStudentParams = zod.object({
   "id": zod.coerce.number()
 })
 
+
+export const updateStudentBodyEmailRegExp = new RegExp('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$');
+
+
 export const UpdateStudentBody = zod.object({
-  "name": zod.string().optional(),
-  "email": zod.string().optional(),
+  "name": zod.string().min(1).optional(),
+  "email": zod.string().regex(updateStudentBodyEmailRegExp).optional(),
   "rollNumber": zod.string().optional(),
   "departmentId": zod.number().optional(),
   "semesterId": zod.number().optional(),
   "admissionDate": zod.string().optional(),
-  "dateOfBirth": zod.string().optional(),
-  "phone": zod.string().optional(),
-  "address": zod.string().optional(),
-  "guardianName": zod.string().optional(),
-  "guardianPhone": zod.string().optional(),
+  "dateOfBirth": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "address": zod.string().nullish(),
+  "guardianName": zod.string().nullish(),
+  "guardianPhone": zod.string().nullish(),
   "isActive": zod.boolean().optional()
 })
 
@@ -641,6 +666,9 @@ export const UpdateStudentResponse = zod.object({
   "guardianName": zod.string().nullish(),
   "guardianPhone": zod.string().nullish(),
   "isActive": zod.boolean().optional(),
+  "registrationNumber": zod.string(),
+  "studentId": zod.string(),
+  "status": zod.enum(['active', 'inactive']),
   "createdAt": zod.string()
 })
 
@@ -718,17 +746,23 @@ export const ListFacultyResponse = zod.object({
 /**
  * @summary Create faculty
  */
+
+export const createFacultyBodyEmailRegExp = new RegExp('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$');
+export const createFacultyBodyPasswordMin = 8;
+
+
+
 export const CreateFacultyBody = zod.object({
-  "name": zod.string(),
-  "email": zod.string(),
-  "password": zod.string(),
+  "name": zod.string().min(1),
+  "email": zod.string().regex(createFacultyBodyEmailRegExp),
+  "password": zod.string().min(createFacultyBodyPasswordMin),
   "employeeId": zod.string(),
   "departmentId": zod.number(),
   "designation": zod.string(),
-  "qualification": zod.string().optional(),
-  "specialization": zod.string().optional(),
+  "qualification": zod.string().nullish(),
+  "specialization": zod.string().nullish(),
   "joiningDate": zod.string(),
-  "phone": zod.string().optional()
+  "phone": zod.string().nullish()
 })
 
 export const CreateFacultyResponse = zod.object({
@@ -783,16 +817,20 @@ export const UpdateFacultyParams = zod.object({
   "id": zod.coerce.number()
 })
 
+
+export const updateFacultyBodyEmailRegExp = new RegExp('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$');
+
+
 export const UpdateFacultyBody = zod.object({
-  "name": zod.string().optional(),
-  "email": zod.string().optional(),
+  "name": zod.string().min(1).optional(),
+  "email": zod.string().regex(updateFacultyBodyEmailRegExp).optional(),
   "employeeId": zod.string().optional(),
   "departmentId": zod.number().optional(),
   "designation": zod.string().optional(),
-  "qualification": zod.string().optional(),
-  "specialization": zod.string().optional(),
+  "qualification": zod.string().nullish(),
+  "specialization": zod.string().nullish(),
   "joiningDate": zod.string().optional(),
-  "phone": zod.string().optional(),
+  "phone": zod.string().nullish(),
   "isActive": zod.boolean().optional()
 })
 

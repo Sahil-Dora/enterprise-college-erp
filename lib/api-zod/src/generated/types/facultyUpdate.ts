@@ -7,14 +7,19 @@
  */
 
 export interface FacultyUpdate {
+  /** @minLength 1 */
   name?: string;
+  /** @pattern ^[^\s@]+@[^\s@]+\.[^\s@]+$ */
   email?: string;
   employeeId?: string;
   departmentId?: number;
   designation?: string;
-  qualification?: string;
-  specialization?: string;
+  /** @nullable */
+  qualification?: string | null;
+  /** @nullable */
+  specialization?: string | null;
   joiningDate?: string;
-  phone?: string;
+  /** @nullable */
+  phone?: string | null;
   isActive?: boolean;
 }

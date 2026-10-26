@@ -229,6 +229,14 @@ export interface CourseUpdate {
   maxStudents?: number;
 }
 
+export type StudentStatus = typeof StudentStatus[keyof typeof StudentStatus];
+
+
+export const StudentStatus = {
+  active: 'active',
+  inactive: 'inactive',
+} as const;
+
 export interface Student {
   id: number;
   userId: number;
@@ -255,36 +263,55 @@ export interface Student {
   /** @nullable */
   guardianPhone?: string | null;
   isActive?: boolean;
+  registrationNumber: string;
+  studentId: string;
+  status: StudentStatus;
   createdAt: string;
 }
 
 export interface StudentInput {
+  /** @minLength 1 */
   name: string;
+  /** @pattern ^[^\s@]+@[^\s@]+\.[^\s@]+$ */
   email: string;
+  /** @minLength 8 */
   password: string;
+  /** @minLength 1 */
   rollNumber: string;
   departmentId: number;
   semesterId: number;
   admissionDate: string;
-  dateOfBirth?: string;
-  phone?: string;
-  address?: string;
-  guardianName?: string;
-  guardianPhone?: string;
+  /** @nullable */
+  dateOfBirth?: string | null;
+  /** @nullable */
+  phone?: string | null;
+  /** @nullable */
+  address?: string | null;
+  /** @nullable */
+  guardianName?: string | null;
+  /** @nullable */
+  guardianPhone?: string | null;
 }
 
 export interface StudentUpdate {
+  /** @minLength 1 */
   name?: string;
+  /** @pattern ^[^\s@]+@[^\s@]+\.[^\s@]+$ */
   email?: string;
   rollNumber?: string;
   departmentId?: number;
   semesterId?: number;
   admissionDate?: string;
-  dateOfBirth?: string;
-  phone?: string;
-  address?: string;
-  guardianName?: string;
-  guardianPhone?: string;
+  /** @nullable */
+  dateOfBirth?: string | null;
+  /** @nullable */
+  phone?: string | null;
+  /** @nullable */
+  address?: string | null;
+  /** @nullable */
+  guardianName?: string | null;
+  /** @nullable */
+  guardianPhone?: string | null;
   isActive?: boolean;
 }
 
@@ -319,28 +346,39 @@ export interface Faculty {
 }
 
 export interface FacultyInput {
+  /** @minLength 1 */
   name: string;
+  /** @pattern ^[^\s@]+@[^\s@]+\.[^\s@]+$ */
   email: string;
+  /** @minLength 8 */
   password: string;
   employeeId: string;
   departmentId: number;
   designation: string;
-  qualification?: string;
-  specialization?: string;
+  /** @nullable */
+  qualification?: string | null;
+  /** @nullable */
+  specialization?: string | null;
   joiningDate: string;
-  phone?: string;
+  /** @nullable */
+  phone?: string | null;
 }
 
 export interface FacultyUpdate {
+  /** @minLength 1 */
   name?: string;
+  /** @pattern ^[^\s@]+@[^\s@]+\.[^\s@]+$ */
   email?: string;
   employeeId?: string;
   departmentId?: number;
   designation?: string;
-  qualification?: string;
-  specialization?: string;
+  /** @nullable */
+  qualification?: string | null;
+  /** @nullable */
+  specialization?: string | null;
   joiningDate?: string;
-  phone?: string;
+  /** @nullable */
+  phone?: string | null;
   isActive?: boolean;
 }
 
@@ -802,8 +840,22 @@ departmentId?: number;
 semesterId?: number;
 search?: string;
 page?: number;
+/**
+ * @minimum 1
+ * @maximum 100
+ */
 limit?: number;
+status?: ListStudentsStatus;
 };
+
+export type ListStudentsStatus = typeof ListStudentsStatus[keyof typeof ListStudentsStatus];
+
+
+export const ListStudentsStatus = {
+  active: 'active',
+  inactive: 'inactive',
+  alumni: 'alumni',
+} as const;
 
 export type ListFacultyParams = {
 departmentId?: number;

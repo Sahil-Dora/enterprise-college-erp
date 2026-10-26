@@ -530,6 +530,13 @@ paths:
           in: query
           schema:
             type: integer
+            minimum: 1
+            maximum: 100
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, inactive, alumni]
       responses:
         "200":
           description: List of students
@@ -2196,7 +2203,7 @@ components:
     # STUDENT SCHEMAS
     Student:
       type: object
-      required: [id, userId, rollNumber, departmentId, semesterId, admissionDate, createdAt]
+      required: [id, userId, rollNumber, departmentId, semesterId, admissionDate, registrationNumber, studentId, status, createdAt]
       properties:
         id:
           type: integer
@@ -2232,6 +2239,13 @@ components:
           type: ["string", "null"]
         isActive:
           type: boolean
+        registrationNumber:
+          type: string
+        studentId:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive]
         createdAt:
           type: string
 
@@ -2241,12 +2255,16 @@ components:
       properties:
         name:
           type: string
+          minLength: 1
         email:
           type: string
+          pattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
         password:
           type: string
+          minLength: 8
         rollNumber:
           type: string
+          minLength: 1
         departmentId:
           type: integer
         semesterId:
@@ -2254,23 +2272,25 @@ components:
         admissionDate:
           type: string
         dateOfBirth:
-          type: string
+          type: ["string", "null"]
         phone:
-          type: string
+          type: ["string", "null"]
         address:
-          type: string
+          type: ["string", "null"]
         guardianName:
-          type: string
+          type: ["string", "null"]
         guardianPhone:
-          type: string
+          type: ["string", "null"]
 
     StudentUpdate:
       type: object
       properties:
         name:
           type: string
+          minLength: 1
         email:
           type: string
+          pattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
         rollNumber:
           type: string
         departmentId:
@@ -2280,15 +2300,15 @@ components:
         admissionDate:
           type: string
         dateOfBirth:
-          type: string
+          type: ["string", "null"]
         phone:
-          type: string
+          type: ["string", "null"]
         address:
-          type: string
+          type: ["string", "null"]
         guardianName:
-          type: string
+          type: ["string", "null"]
         guardianPhone:
-          type: string
+          type: ["string", "null"]
         isActive:
           type: boolean
 
@@ -2349,10 +2369,13 @@ components:
       properties:
         name:
           type: string
+          minLength: 1
         email:
           type: string
+          pattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
         password:
           type: string
+          minLength: 8
         employeeId:
           type: string
         departmentId:
@@ -2360,21 +2383,23 @@ components:
         designation:
           type: string
         qualification:
-          type: string
+          type: ["string", "null"]
         specialization:
-          type: string
+          type: ["string", "null"]
         joiningDate:
           type: string
         phone:
-          type: string
+          type: ["string", "null"]
 
     FacultyUpdate:
       type: object
       properties:
         name:
           type: string
+          minLength: 1
         email:
           type: string
+          pattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
         employeeId:
           type: string
         departmentId:
@@ -2382,13 +2407,13 @@ components:
         designation:
           type: string
         qualification:
-          type: string
+          type: ["string", "null"]
         specialization:
-          type: string
+          type: ["string", "null"]
         joiningDate:
           type: string
         phone:
-          type: string
+          type: ["string", "null"]
         isActive:
           type: boolean
 

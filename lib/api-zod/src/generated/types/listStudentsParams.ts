@@ -5,11 +5,17 @@
  * Enterprise College ERP System API
  * OpenAPI spec version: 0.1.0
  */
+import type { ListStudentsStatus } from './listStudentsStatus';
 
 export type ListStudentsParams = {
 departmentId?: number;
 semesterId?: number;
 search?: string;
 page?: number;
+/**
+ * @minimum 1
+ * @maximum 100
+ */
 limit?: number;
+status?: ListStudentsStatus;
 };

@@ -20,7 +20,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useForm } from "react-hook-form";
-import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useToast } from "@/hooks/use-toast";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -28,6 +27,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getListFacultyQueryKey } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { LucideIcon } from "lucide-react";
+import {
+  crudListState,
+  crudErrorMessage,
+  facultyFormSchema,
+  nullableText,
+  type FacultyFormValues,
+} from "@/lib/crud-validation";
 
 export default function Faculty() {
   const [search, setSearch] = useState("");
@@ -45,8 +51,13 @@ export default function Faculty() {
     ...(departmentId !== "all" ? { departmentId: Number(departmentId) } : {})
   };
   
-  const { data: facultyData, isLoading } = useListFaculty(queryParams, {
+  const { data: facultyData, isLoading, isError, error, refetch } = useListFaculty(queryParams, {
     query: { queryKey: getListFacultyQueryKey(queryParams) }
+  });
+  const listState = crudListState({
+    isLoading,
+    isError,
+    hasItems: Boolean(facultyData?.data.length),
   });
   const [summary, setSummary] = useState<{ totalFaculty: number; activeFaculty: number; totalCourses: number; totalDepartments: number } | null>(null);
   useEffect(() => {
@@ -60,13 +71,13 @@ export default function Faculty() {
   const deleteMutation = useDeleteFaculty();
 
   const handleDelete = async (id: number) => {
-    if (confirm("Are you sure you want to delete this faculty member?")) {
+    if (window.confirm("Delete this faculty member? Their sign-in account will be disabled. This cannot be undone.")) {
       try {
         await deleteMutation.mutateAsync({ id });
         toast({ title: "Faculty deleted" });
         queryClient.invalidateQueries({ queryKey: [getListFacultyQueryKey()[0]] });
-      } catch (err: any) {
-        toast({ title: "Failed to delete", description: err.message, variant: "destructive" });
+      } catch (err: unknown) {
+        toast({ title: "Failed to delete", description: crudErrorMessage(err), variant: "destructive" });
       }
     }
   };
@@ -104,10 +115,10 @@ export default function Faculty() {
             placeholder="Search faculty..." 
             className="pl-9 bg-background" 
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           />
         </div>
-        <Select value={departmentId} onValueChange={setDepartmentId}>
+        <Select value={departmentId} onValueChange={(value) => { setDepartmentId(value); setPage(1); }}>
           <SelectTrigger className="w-[200px] bg-background">
             <SelectValue placeholder="Department" />
           </SelectTrigger>
@@ -133,7 +144,7 @@ export default function Faculty() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {isLoading ? (
+            {listState === "loading" ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <TableRow key={i}>
                   <TableCell><Skeleton className="h-10 w-[200px]" /></TableCell>
@@ -144,14 +155,21 @@ export default function Faculty() {
                   <TableCell><Skeleton className="h-8 w-8 ml-auto" /></TableCell>
                 </TableRow>
               ))
-            ) : !facultyData?.data.length ? (
+            ) : listState === "error" ? (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center py-10">
+                  <p className="mb-3 text-destructive">{crudErrorMessage(error, "Unable to load faculty.")}</p>
+                  <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
+                </TableCell>
+              </TableRow>
+            ) : listState === "empty" ? (
               <TableRow>
                 <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
                   No faculty found
                 </TableCell>
               </TableRow>
             ) : (
-              facultyData.data.map((faculty) => (
+              facultyData!.data.map((faculty) => (
                 <TableRow key={faculty.id} className="hover:bg-muted/50 transition-colors">
                   <TableCell>
                     <div className="flex items-center gap-3">
@@ -196,7 +214,7 @@ export default function Faculty() {
                             <FileEdit className="mr-2 h-4 w-4" /> Edit
                           </div>
                         } />
-                        <DropdownMenuItem onClick={() => handleDelete(faculty.id)} className="text-destructive focus:text-destructive">
+                        <DropdownMenuItem disabled={deleteMutation.isPending} onClick={() => handleDelete(faculty.id)} className="text-destructive focus:text-destructive">
                           <Trash2 className="mr-2 h-4 w-4" /> Delete
                         </DropdownMenuItem>
                       </DropdownMenuContent>
@@ -222,19 +240,6 @@ export default function Faculty() {
   );
 }
 
-const facultySchema = z.object({
-  name: z.string().min(1, "Name is required"),
-  email: z.string().email(),
-  password: z.string().optional(),
-  employeeId: z.string().min(1, "Employee ID required"),
-  departmentId: z.coerce.number().min(1),
-  designation: z.string().min(1),
-  qualification: z.string().optional(),
-  specialization: z.string().optional(),
-  joiningDate: z.string(),
-  phone: z.string().optional(),
-});
-
 function FacultyDialog({ mode, faculty, departments, trigger }: any) {
   const [open, setOpen] = useState(false);
   const { toast } = useToast();
@@ -242,8 +247,8 @@ function FacultyDialog({ mode, faculty, departments, trigger }: any) {
   const createMutation = useCreateFaculty();
   const updateMutation = useUpdateFaculty();
 
-  const form = useForm({
-    resolver: zodResolver(facultySchema),
+  const form = useForm<FacultyFormValues>({
+    resolver: zodResolver(facultyFormSchema(mode)),
     defaultValues: {
       name: faculty?.name || "",
       email: faculty?.email || "",
@@ -255,26 +260,36 @@ function FacultyDialog({ mode, faculty, departments, trigger }: any) {
       specialization: faculty?.specialization || "",
       joiningDate: faculty?.joiningDate ? format(new Date(faculty.joiningDate), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
       phone: faculty?.phone || "",
+      isActive: faculty?.isActive ?? true,
     }
   });
 
-  const onSubmit = async (data: any) => {
+  const onSubmit = async (data: FacultyFormValues) => {
     try {
+      const { password, isActive, ...fields } = data;
+      const payload = {
+        ...fields,
+        phone: nullableText(fields.phone),
+        qualification: nullableText(fields.qualification),
+        specialization: nullableText(fields.specialization),
+      };
       if (mode === "create") {
-        if (!data.password) data.password = "temp123";
-        await createMutation.mutateAsync({ data });
+        if (!password) return;
+        await createMutation.mutateAsync({ data: { ...payload, password } });
         toast({ title: "Faculty member created" });
       } else {
-        await updateMutation.mutateAsync({ id: faculty.id, data });
+        await updateMutation.mutateAsync({ id: faculty.id, data: { ...payload, isActive } });
         toast({ title: "Faculty member updated" });
       }
       queryClient.invalidateQueries({ queryKey: [getListFacultyQueryKey()[0]] });
       setOpen(false);
       form.reset();
-    } catch (err: any) {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({ title: "Error", description: crudErrorMessage(err), variant: "destructive" });
     }
   };
+
+  const isSaving = createMutation.isPending || updateMutation.isPending;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -309,7 +324,7 @@ function FacultyDialog({ mode, faculty, departments, trigger }: any) {
               <FormField control={form.control} name="password" render={({field}) => (
                 <FormItem className="col-span-2 sm:col-span-1">
                   <FormLabel>Password</FormLabel>
-                  <FormControl><Input type="password" {...field} placeholder="Auto-generated if empty" /></FormControl>
+                  <FormControl><Input type="password" {...field} autoComplete="new-password" placeholder="At least 8 characters" /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
@@ -368,9 +383,24 @@ function FacultyDialog({ mode, faculty, departments, trigger }: any) {
                 <FormMessage />
               </FormItem>
             )} />
+            {mode === "edit" && (
+              <FormField control={form.control} name="isActive" render={({field}) => (
+                <FormItem className="col-span-2 sm:col-span-1">
+                  <FormLabel>Account status</FormLabel>
+                  <Select value={field.value ? "active" : "inactive"} onValueChange={(value) => field.onChange(value === "active")}>
+                    <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                    <SelectContent>
+                      <SelectItem value="active">Active</SelectItem>
+                      <SelectItem value="inactive">Inactive</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )} />
+            )}
             <div className="col-span-2 flex justify-end gap-2 mt-2">
-              <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button type="submit">{mode === "create" ? "Save Faculty" : "Update Faculty"}</Button>
+              <Button type="button" variant="outline" disabled={isSaving} onClick={() => setOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={isSaving}>{isSaving ? "Saving…" : mode === "create" ? "Save Faculty" : "Update Faculty"}</Button>
             </div>
           </form>
         </Form>

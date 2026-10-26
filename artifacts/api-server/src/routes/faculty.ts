@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, ilike, sql } from "drizzle-orm";
+import { eq, and, ilike, ne, sql } from "drizzle-orm";
 import { db, facultyTable, usersTable, departmentsTable, coursesTable, semestersTable } from "@workspace/db";
 import { ListFacultyQueryParams, CreateFacultyBody, GetFacultyParams, UpdateFacultyParams, UpdateFacultyBody, DeleteFacultyParams, GetFacultyCoursesParams } from "@workspace/api-zod";
 import { authenticate } from "../middlewares/auth";
@@ -38,9 +38,20 @@ function fmtFaculty(r: Awaited<ReturnType<typeof buildFacultyQuery>>[number]) {
   return { ...r, createdAt: r.createdAt.toISOString() };
 }
 
+function isForeignKeyViolation(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  if (candidate.code === "23503") return true;
+  return typeof candidate.cause === "object" &&
+    candidate.cause !== null &&
+    "code" in candidate.cause &&
+    candidate.cause.code === "23503";
+}
+
 router.get("/faculty", authenticate, async (req, res): Promise<void> => {
   const parsed = ListFacultyQueryParams.safeParse(req.query);
-  const { departmentId, search, page = 1, limit = 20 } = parsed.data ?? {};
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+  const { departmentId, search, page = 1, limit = 20 } = parsed.data;
   const pageNum = Number(page);
   const limitNum = Number(limit);
   const offset = (pageNum - 1) * limitNum;
@@ -98,16 +109,36 @@ router.patch("/faculty/:id", authenticate, async (req, res): Promise<void> => {
   const parsed = UpdateFacultyBody.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
 
-  const { name, email, isActive, phone, ...facultyFields } = parsed.data as typeof parsed.data & { name?: string; email?: string; phone?: string; isActive?: boolean };
+  const { name, email, isActive, phone, ...facultyRecordFields } = parsed.data;
   const [faculty] = await db.select().from(facultyTable).where(eq(facultyTable.id, params.data.id));
   if (!faculty) { res.status(404).json({ error: "Faculty not found" }); return; }
 
-  if (name || email || isActive !== undefined || phone) {
-    await db.update(usersTable).set({ ...(name && { name }), ...(email && { email }), ...(isActive !== undefined && { isActive }), ...(phone && { phone }) }).where(eq(usersTable.id, faculty.userId));
+  if (email !== undefined) {
+    const [existingEmail] = await db
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(and(eq(usersTable.email, email), ne(usersTable.id, faculty.userId)));
+    if (existingEmail) { res.status(409).json({ error: "Email already registered" }); return; }
   }
-  if (Object.keys(facultyFields).length > 0) {
-    await db.update(facultyTable).set(facultyFields).where(eq(facultyTable.id, params.data.id));
-  }
+
+  const userFields: Partial<typeof usersTable.$inferInsert> = {};
+  if (name !== undefined) userFields.name = name;
+  if (email !== undefined) userFields.email = email;
+  if (phone !== undefined) userFields.phone = phone;
+  if (isActive !== undefined) userFields.isActive = isActive;
+  const facultyFields = {
+    ...facultyRecordFields,
+    ...(isActive !== undefined ? { isActive } : {}),
+  };
+
+  await db.transaction(async (tx) => {
+    if (Object.keys(userFields).length > 0) {
+      await tx.update(usersTable).set(userFields).where(eq(usersTable.id, faculty.userId));
+    }
+    if (Object.keys(facultyFields).length > 0) {
+      await tx.update(facultyTable).set(facultyFields).where(eq(facultyTable.id, params.data.id));
+    }
+  });
 
   const [data] = await buildFacultyQuery([eq(facultyTable.id, params.data.id) as ReturnType<typeof and>], 1, 0);
   res.json(fmtFaculty(data!));
@@ -116,8 +147,25 @@ router.patch("/faculty/:id", authenticate, async (req, res): Promise<void> => {
 router.delete("/faculty/:id", authenticate, async (req, res): Promise<void> => {
   const params = DeleteFacultyParams.safeParse(req.params);
   if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
-  const [f] = await db.delete(facultyTable).where(eq(facultyTable.id, params.data.id)).returning();
-  if (!f) { res.status(404).json({ error: "Faculty not found" }); return; }
+  let deleted: boolean;
+  try {
+    deleted = await db.transaction(async (tx) => {
+      const [faculty] = await tx
+        .delete(facultyTable)
+        .where(eq(facultyTable.id, params.data.id))
+        .returning({ userId: facultyTable.userId });
+      if (!faculty) return false;
+      await tx.update(usersTable).set({ isActive: false }).where(eq(usersTable.id, faculty.userId));
+      return true;
+    });
+  } catch (error) {
+    if (isForeignKeyViolation(error)) {
+      res.status(409).json({ error: "Faculty member has linked records and cannot be deleted" });
+      return;
+    }
+    throw error;
+  }
+  if (!deleted) { res.status(404).json({ error: "Faculty not found" }); return; }
   res.sendStatus(204);
 });
 

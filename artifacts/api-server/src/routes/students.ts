@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, ilike, sql } from "drizzle-orm";
+import { eq, and, ilike, ne, sql } from "drizzle-orm";
 import { db, studentsTable, usersTable, departmentsTable, semestersTable, coursesTable, facultyTable, attendanceTable, feeRecordsTable, examinationsTable, assignmentsTable, noticesTable } from "@workspace/db";
 import { ListStudentsQueryParams, CreateStudentBody, GetStudentParams, UpdateStudentParams, UpdateStudentBody, DeleteStudentParams, GetStudentCoursesParams } from "@workspace/api-zod";
 import { authenticate } from "../middlewares/auth";
@@ -48,9 +48,20 @@ function fmtStudent(r: Awaited<ReturnType<typeof buildStudentQuery>>[number]) {
   };
 }
 
+function isForeignKeyViolation(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  if (candidate.code === "23503") return true;
+  return typeof candidate.cause === "object" &&
+    candidate.cause !== null &&
+    "code" in candidate.cause &&
+    candidate.cause.code === "23503";
+}
+
 router.get("/students", authenticate, async (req, res): Promise<void> => {
   const parsed = ListStudentsQueryParams.safeParse(req.query);
-  const { departmentId, semesterId, search, page = 1, limit = 20 } = parsed.data ?? {};
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+  const { departmentId, semesterId, search, status, page = 1, limit = 20 } = parsed.data;
   const pageNum = Number(page);
   const limitNum = Number(limit);
   const offset = (pageNum - 1) * limitNum;
@@ -60,7 +71,6 @@ router.get("/students", authenticate, async (req, res): Promise<void> => {
   if (departmentId) conditions.push(eq(studentsTable.departmentId, Number(departmentId)));
   if (semesterId) conditions.push(eq(studentsTable.semesterId, Number(semesterId)));
   if (search) conditions.push(ilike(usersTable.name, `%${search}%`));
-  const status = typeof req.query.status === "string" ? req.query.status : undefined;
   if (status === "active") conditions.push(eq(studentsTable.isActive, true));
   if (status === "inactive" || status === "alumni") conditions.push(eq(studentsTable.isActive, false));
   if (search && /^REG-|^STU-/i.test(search)) {
@@ -98,10 +108,12 @@ router.post("/students", authenticate, async (req, res): Promise<void> => {
     return { ...student, name: user.name, email: user.email, phone: user.phone, avatarUrl: user.avatarUrl };
   });
 
-  const [dept] = await db.select({ name: departmentsTable.name }).from(departmentsTable).where(eq(departmentsTable.id, result.departmentId));
-  const [sem] = await db.select({ name: semestersTable.name }).from(semestersTable).where(eq(semestersTable.id, result.semesterId));
-
-  res.status(201).json({ ...result, departmentName: dept?.name ?? null, semesterName: sem?.name ?? null, createdAt: result.createdAt.toISOString() });
+  const [createdStudent] = await buildStudentQuery(
+    [eq(studentsTable.id, result.id) as ReturnType<typeof and>],
+    1,
+    0,
+  );
+  res.status(201).json(fmtStudent(createdStudent));
 });
 
 router.get("/students/:id", authenticate, async (req, res): Promise<void> => {
@@ -121,17 +133,37 @@ router.patch("/students/:id", authenticate, async (req, res): Promise<void> => {
   const parsed = UpdateStudentBody.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
 
-  const { name, email, isActive, phone, ...studentFields } = parsed.data as typeof parsed.data & { name?: string; email?: string; phone?: string; isActive?: boolean };
+  const { name, email, isActive, phone, ...studentRecordFields } = parsed.data;
 
   const [student] = await db.select().from(studentsTable).where(eq(studentsTable.id, params.data.id));
   if (!student) { res.status(404).json({ error: "Student not found" }); return; }
 
-  if (name || email || isActive !== undefined || phone) {
-    await db.update(usersTable).set({ ...(name && { name }), ...(email && { email }), ...(isActive !== undefined && { isActive }), ...(phone && { phone }) }).where(eq(usersTable.id, student.userId));
+  if (email !== undefined) {
+    const [existingEmail] = await db
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(and(eq(usersTable.email, email), ne(usersTable.id, student.userId)));
+    if (existingEmail) { res.status(409).json({ error: "Email already registered" }); return; }
   }
-  if (Object.keys(studentFields).length > 0) {
-    await db.update(studentsTable).set(studentFields).where(eq(studentsTable.id, params.data.id));
-  }
+
+  const userFields: Partial<typeof usersTable.$inferInsert> = {};
+  if (name !== undefined) userFields.name = name;
+  if (email !== undefined) userFields.email = email;
+  if (phone !== undefined) userFields.phone = phone;
+  if (isActive !== undefined) userFields.isActive = isActive;
+  const studentFields = {
+    ...studentRecordFields,
+    ...(isActive !== undefined ? { isActive } : {}),
+  };
+
+  await db.transaction(async (tx) => {
+    if (Object.keys(userFields).length > 0) {
+      await tx.update(usersTable).set(userFields).where(eq(usersTable.id, student.userId));
+    }
+    if (Object.keys(studentFields).length > 0) {
+      await tx.update(studentsTable).set(studentFields).where(eq(studentsTable.id, params.data.id));
+    }
+  });
 
   const [data] = await buildStudentQuery([eq(studentsTable.id, params.data.id) as ReturnType<typeof and>], 1, 0);
   res.json(fmtStudent(data!));
@@ -141,8 +173,25 @@ router.delete("/students/:id", authenticate, async (req, res): Promise<void> => 
   const params = DeleteStudentParams.safeParse(req.params);
   if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
   if (req.user?.role === "student") { res.status(403).json({ error: "Students cannot delete academic records" }); return; }
-  const [s] = await db.delete(studentsTable).where(eq(studentsTable.id, params.data.id)).returning();
-  if (!s) { res.status(404).json({ error: "Student not found" }); return; }
+  let deleted: boolean;
+  try {
+    deleted = await db.transaction(async (tx) => {
+      const [student] = await tx
+        .delete(studentsTable)
+        .where(eq(studentsTable.id, params.data.id))
+        .returning({ userId: studentsTable.userId });
+      if (!student) return false;
+      await tx.update(usersTable).set({ isActive: false }).where(eq(usersTable.id, student.userId));
+      return true;
+    });
+  } catch (error) {
+    if (isForeignKeyViolation(error)) {
+      res.status(409).json({ error: "Student has linked academic records and cannot be deleted" });
+      return;
+    }
+    throw error;
+  }
+  if (!deleted) { res.status(404).json({ error: "Student not found" }); return; }
   res.sendStatus(204);
 });
 

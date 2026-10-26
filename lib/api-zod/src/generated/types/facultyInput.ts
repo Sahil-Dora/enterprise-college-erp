@@ -7,14 +7,20 @@
  */
 
 export interface FacultyInput {
+  /** @minLength 1 */
   name: string;
+  /** @pattern ^[^\s@]+@[^\s@]+\.[^\s@]+$ */
   email: string;
+  /** @minLength 8 */
   password: string;
   employeeId: string;
   departmentId: number;
   designation: string;
-  qualification?: string;
-  specialization?: string;
+  /** @nullable */
+  qualification?: string | null;
+  /** @nullable */
+  specialization?: string | null;
   joiningDate: string;
-  phone?: string;
+  /** @nullable */
+  phone?: string | null;
 }
