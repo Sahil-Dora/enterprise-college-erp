@@ -35,6 +35,30 @@ export default function AdmissionCrm() {
 
   const hdr = { Authorization: `Bearer ${token}` };
 
+  const downloadAuthenticated = async (url: string, filename: string, openInNewTab = false) => {
+    try {
+      const response = await fetch(url, { headers: hdr });
+      if (!response.ok) {
+        toast({ title: "Download failed", description: `Request failed (${response.status})`, variant: "destructive" });
+        return;
+      }
+      const objectUrl = URL.createObjectURL(await response.blob());
+      if (openInNewTab) {
+        window.open(objectUrl, "_blank", "noopener,noreferrer");
+      } else {
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    } catch {
+      toast({ title: "Download failed", description: "Could not retrieve the file.", variant: "destructive" });
+    }
+  };
+
   const loadQueue = async (q = "") => {
     const r = await fetch(`/api/admissions/applications?search=${encodeURIComponent(q)}`, { headers: hdr });
     if (r.ok) setRows(await r.json());
@@ -145,7 +169,7 @@ export default function AdmissionCrm() {
             <Input className="pl-9" placeholder="Search by name, ID, email, reference…" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && loadQueue(search)} />
           </div>
           <Button variant="outline" onClick={() => loadQueue(search)}>Search</Button>
-          <Button variant="outline" asChild><a href="/api/admissions/export.xlsx" download>Export Excel</a></Button>
+          <Button variant="outline" onClick={() => void downloadAuthenticated("/api/admissions/export.xlsx", "admission-applications.xls")}>Export Excel</Button>
         </div>
 
         <Card>
@@ -175,11 +199,11 @@ export default function AdmissionCrm() {
                     <Button size="sm" variant="outline" onClick={() => setScheduleModal({ type: "test", applicationId: row.id })}>
                       <FlaskConical className="mr-1 h-3.5 w-3.5" />Test
                     </Button>
-                    <Button size="sm" variant="outline" asChild>
-                      <a href={`/api/admissions/applications/${row.applicationId}/letter`} target="_blank" rel="noopener noreferrer"><Download className="mr-1 h-3.5 w-3.5" />Letter</a>
+                    <Button size="sm" variant="outline" onClick={() => void downloadAuthenticated(`/api/admissions/applications/${encodeURIComponent(row.applicationId)}/letter`, `${row.applicationId}-letter.html`, true)}>
+                      <Download className="mr-1 h-3.5 w-3.5" />Letter
                     </Button>
-                    <Button size="sm" variant="outline" asChild>
-                      <a href={`/api/admissions/applications/${row.applicationId}/export.csv`} download><Download className="mr-1 h-3.5 w-3.5" />CSV</a>
+                    <Button size="sm" variant="outline" onClick={() => void downloadAuthenticated(`/api/admissions/applications/${encodeURIComponent(row.applicationId)}/export.csv`, `${row.applicationId}.csv`)}>
+                      <Download className="mr-1 h-3.5 w-3.5" />CSV
                     </Button>
                     <Button size="sm" onClick={() => review(row.id, "approved")}><CheckCircle2 className="mr-1 h-3.5 w-3.5" />Approve</Button>
                     <Button size="sm" variant="outline" onClick={() => review(row.id, "verification")}><Clock className="mr-1 h-3.5 w-3.5" />Verify</Button>

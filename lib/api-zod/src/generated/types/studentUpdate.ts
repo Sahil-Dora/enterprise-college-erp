@@ -7,16 +7,23 @@
  */
 
 export interface StudentUpdate {
+  /** @minLength 1 */
   name?: string;
+  /** @pattern ^[^\s@]+@[^\s@]+\.[^\s@]+$ */
   email?: string;
   rollNumber?: string;
   departmentId?: number;
   semesterId?: number;
   admissionDate?: string;
-  dateOfBirth?: string;
-  phone?: string;
-  address?: string;
-  guardianName?: string;
-  guardianPhone?: string;
+  /** @nullable */
+  dateOfBirth?: string | null;
+  /** @nullable */
+  phone?: string | null;
+  /** @nullable */
+  address?: string | null;
+  /** @nullable */
+  guardianName?: string | null;
+  /** @nullable */
+  guardianPhone?: string | null;
   isActive?: boolean;
 }

@@ -6,8 +6,7 @@ import {
   useListSemesters,
   useCreateStudent,
   useUpdateStudent,
-  useDeleteStudent,
-  Student
+  useDeleteStudent
 } from "@workspace/api-client-react";
 import { Plus, Search, MoreHorizontal, FileEdit, Trash2, GraduationCap } from "lucide-react";
 import { format } from "date-fns";
@@ -22,17 +21,24 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useForm } from "react-hook-form";
-import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useToast } from "@/hooks/use-toast";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useQueryClient } from "@tanstack/react-query";
 import { getListStudentsQueryKey } from "@workspace/api-client-react";
+import {
+  crudListState,
+  crudErrorMessage,
+  nullableText,
+  studentFormSchema,
+  type StudentFormValues,
+} from "@/lib/crud-validation";
 
 export default function Students() {
   const [search, setSearch] = useState("");
   const [departmentId, setDepartmentId] = useState<string>("all");
   const [semesterId, setSemesterId] = useState<string>("all");
+  const [status, setStatus] = useState<"all" | "active" | "inactive" | "alumni">("all");
   const [page, setPage] = useState(1);
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -45,23 +51,29 @@ export default function Students() {
     limit: 10,
     ...(search ? { search } : {}),
     ...(departmentId !== "all" ? { departmentId: Number(departmentId) } : {}),
-    ...(semesterId !== "all" ? { semesterId: Number(semesterId) } : {})
+    ...(semesterId !== "all" ? { semesterId: Number(semesterId) } : {}),
+    ...(status !== "all" ? { status } : {}),
   };
   
-  const { data: studentsData, isLoading } = useListStudents(queryParams, {
+  const { data: studentsData, isLoading, isError, error, refetch } = useListStudents(queryParams, {
     query: { queryKey: getListStudentsQueryKey(queryParams) }
+  });
+  const listState = crudListState({
+    isLoading,
+    isError,
+    hasItems: Boolean(studentsData?.data.length),
   });
 
   const deleteMutation = useDeleteStudent();
 
   const handleDelete = async (id: number) => {
-    if (confirm("Are you sure you want to delete this student?")) {
+    if (window.confirm("Delete this student? Their sign-in account will be disabled. This cannot be undone.")) {
       try {
         await deleteMutation.mutateAsync({ id });
         toast({ title: "Student deleted" });
         queryClient.invalidateQueries({ queryKey: [getListStudentsQueryKey()[0]] });
-      } catch (err: any) {
-        toast({ title: "Failed to delete", description: err.message, variant: "destructive" });
+      } catch (err: unknown) {
+        toast({ title: "Failed to delete", description: crudErrorMessage(err), variant: "destructive" });
       }
     }
   };
@@ -80,10 +92,10 @@ export default function Students() {
             placeholder="Search students..." 
             className="pl-9 bg-background" 
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           />
         </div>
-        <Select value={departmentId} onValueChange={setDepartmentId}>
+        <Select value={departmentId} onValueChange={(value) => { setDepartmentId(value); setPage(1); }}>
           <SelectTrigger className="w-[180px] bg-background">
             <SelectValue placeholder="Department" />
           </SelectTrigger>
@@ -94,7 +106,7 @@ export default function Students() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={semesterId} onValueChange={setSemesterId}>
+        <Select value={semesterId} onValueChange={(value) => { setSemesterId(value); setPage(1); }}>
           <SelectTrigger className="w-[180px] bg-background">
             <SelectValue placeholder="Semester" />
           </SelectTrigger>
@@ -103,6 +115,17 @@ export default function Students() {
             {semesters?.map(sem => (
               <SelectItem key={sem.id} value={sem.id.toString()}>{sem.name}</SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+        <Select value={status} onValueChange={(value) => { setStatus(value as typeof status); setPage(1); }}>
+          <SelectTrigger className="w-[180px] bg-background">
+            <SelectValue placeholder="Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Statuses</SelectItem>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="inactive">Inactive</SelectItem>
+            <SelectItem value="alumni">Alumni</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -120,7 +143,7 @@ export default function Students() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {isLoading ? (
+            {listState === "loading" ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <TableRow key={i}>
                   <TableCell><Skeleton className="h-10 w-[200px]" /></TableCell>
@@ -131,14 +154,21 @@ export default function Students() {
                   <TableCell><Skeleton className="h-8 w-8 ml-auto" /></TableCell>
                 </TableRow>
               ))
-            ) : !studentsData?.data.length ? (
+            ) : listState === "error" ? (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center py-10">
+                  <p className="mb-3 text-destructive">{crudErrorMessage(error, "Unable to load students.")}</p>
+                  <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
+                </TableCell>
+              </TableRow>
+            ) : listState === "empty" ? (
               <TableRow>
                 <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
                   No students found
                 </TableCell>
               </TableRow>
             ) : (
-              studentsData.data.map((student) => (
+              studentsData!.data.map((student) => (
                 <TableRow key={student.id} className="hover:bg-muted/50 transition-colors">
                   <TableCell>
                     <div className="flex items-center gap-3">
@@ -183,7 +213,7 @@ export default function Students() {
                             <FileEdit className="mr-2 h-4 w-4" /> Edit
                           </div>
                         } />
-                        <DropdownMenuItem onClick={() => handleDelete(student.id)} className="text-destructive focus:text-destructive">
+                        <DropdownMenuItem disabled={deleteMutation.isPending} onClick={() => handleDelete(student.id)} className="text-destructive focus:text-destructive">
                           <Trash2 className="mr-2 h-4 w-4" /> Delete
                         </DropdownMenuItem>
                       </DropdownMenuContent>
@@ -209,17 +239,6 @@ export default function Students() {
   );
 }
 
-const studentSchema = z.object({
-  name: z.string().min(1, "Name is required"),
-  email: z.string().email(),
-  password: z.string().optional(),
-  rollNumber: z.string().min(1, "Roll number required"),
-  departmentId: z.coerce.number().min(1),
-  semesterId: z.coerce.number().min(1),
-  admissionDate: z.string(),
-  phone: z.string().optional(),
-});
-
 function StudentDialog({ mode, student, departments, semesters, trigger }: any) {
   const [open, setOpen] = useState(false);
   const { toast } = useToast();
@@ -227,8 +246,8 @@ function StudentDialog({ mode, student, departments, semesters, trigger }: any) 
   const createMutation = useCreateStudent();
   const updateMutation = useUpdateStudent();
 
-  const form = useForm({
-    resolver: zodResolver(studentSchema),
+  const form = useForm<StudentFormValues>({
+    resolver: zodResolver(studentFormSchema(mode)),
     defaultValues: {
       name: student?.name || "",
       email: student?.email || "",
@@ -238,26 +257,42 @@ function StudentDialog({ mode, student, departments, semesters, trigger }: any) 
       semesterId: student?.semesterId || "",
       admissionDate: student?.admissionDate ? format(new Date(student.admissionDate), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
       phone: student?.phone || "",
+      dateOfBirth: student?.dateOfBirth || "",
+      address: student?.address || "",
+      guardianName: student?.guardianName || "",
+      guardianPhone: student?.guardianPhone || "",
+      isActive: student?.isActive ?? true,
     }
   });
 
-  const onSubmit = async (data: any) => {
+  const onSubmit = async (data: StudentFormValues) => {
     try {
+      const { password, isActive, ...fields } = data;
+      const payload = {
+        ...fields,
+        phone: nullableText(fields.phone),
+        dateOfBirth: nullableText(fields.dateOfBirth),
+        address: nullableText(fields.address),
+        guardianName: nullableText(fields.guardianName),
+        guardianPhone: nullableText(fields.guardianPhone),
+      };
       if (mode === "create") {
-        if (!data.password) data.password = "temp123";
-        await createMutation.mutateAsync({ data });
+        if (!password) return;
+        await createMutation.mutateAsync({ data: { ...payload, password } });
         toast({ title: "Student created" });
       } else {
-        await updateMutation.mutateAsync({ id: student.id, data });
+        await updateMutation.mutateAsync({ id: student.id, data: { ...payload, isActive } });
         toast({ title: "Student updated" });
       }
       queryClient.invalidateQueries({ queryKey: [getListStudentsQueryKey()[0]] });
       setOpen(false);
       form.reset();
     } catch (err: any) {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: "Error", description: crudErrorMessage(err), variant: "destructive" });
     }
   };
+
+  const isSaving = createMutation.isPending || updateMutation.isPending;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -292,7 +327,7 @@ function StudentDialog({ mode, student, departments, semesters, trigger }: any) 
               <FormField control={form.control} name="password" render={({field}) => (
                 <FormItem className="col-span-2 sm:col-span-1">
                   <FormLabel>Password</FormLabel>
-                  <FormControl><Input type="password" {...field} placeholder="Auto-generated if empty" /></FormControl>
+                  <FormControl><Input type="password" {...field} autoComplete="new-password" placeholder="At least 8 characters" /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
@@ -342,9 +377,52 @@ function StudentDialog({ mode, student, departments, semesters, trigger }: any) 
                 <FormMessage />
               </FormItem>
             )} />
+            <FormField control={form.control} name="dateOfBirth" render={({field}) => (
+              <FormItem className="col-span-2 sm:col-span-1">
+                <FormLabel>Date of Birth (optional)</FormLabel>
+                <FormControl><Input type="date" {...field} /></FormControl>
+                <FormMessage />
+              </FormItem>
+            )} />
+            <FormField control={form.control} name="address" render={({field}) => (
+              <FormItem className="col-span-2">
+                <FormLabel>Address (optional)</FormLabel>
+                <FormControl><Input {...field} /></FormControl>
+                <FormMessage />
+              </FormItem>
+            )} />
+            <FormField control={form.control} name="guardianName" render={({field}) => (
+              <FormItem className="col-span-2 sm:col-span-1">
+                <FormLabel>Guardian Name (optional)</FormLabel>
+                <FormControl><Input {...field} /></FormControl>
+                <FormMessage />
+              </FormItem>
+            )} />
+            <FormField control={form.control} name="guardianPhone" render={({field}) => (
+              <FormItem className="col-span-2 sm:col-span-1">
+                <FormLabel>Guardian Phone (optional)</FormLabel>
+                <FormControl><Input {...field} /></FormControl>
+                <FormMessage />
+              </FormItem>
+            )} />
+            {mode === "edit" && (
+              <FormField control={form.control} name="isActive" render={({field}) => (
+                <FormItem className="col-span-2 sm:col-span-1">
+                  <FormLabel>Account status</FormLabel>
+                  <Select value={field.value ? "active" : "inactive"} onValueChange={(value) => field.onChange(value === "active")}>
+                    <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                    <SelectContent>
+                      <SelectItem value="active">Active</SelectItem>
+                      <SelectItem value="inactive">Inactive</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )} />
+            )}
             <div className="col-span-2 flex justify-end gap-2 mt-2">
-              <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button type="submit">{mode === "create" ? "Save Student" : "Update Student"}</Button>
+              <Button type="button" variant="outline" disabled={isSaving} onClick={() => setOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={isSaving}>{isSaving ? "Saving…" : mode === "create" ? "Save Student" : "Update Student"}</Button>
             </div>
           </form>
         </Form>

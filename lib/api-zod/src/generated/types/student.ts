@@ -5,6 +5,7 @@
  * Enterprise College ERP System API
  * OpenAPI spec version: 0.1.0
  */
+import type { StudentStatus } from './studentStatus';
 
 export interface Student {
   id: number;
@@ -32,5 +33,8 @@ export interface Student {
   /** @nullable */
   guardianPhone?: string | null;
   isActive?: boolean;
+  registrationNumber: string;
+  studentId: string;
+  status: StudentStatus;
   createdAt: string;
 }

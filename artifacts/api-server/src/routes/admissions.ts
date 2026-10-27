@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, desc, eq, ilike, or, ne, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, isNull, or, ne, sql } from "drizzle-orm";
 import {
   admissionAcademicAssignmentsTable, admissionApplicationsTable, admissionDeliveryQueueTable,
   admissionDocumentsTable, admissionEventsTable, admissionInterviewsTable,
@@ -7,6 +7,7 @@ import {
   db, departmentsTable, semestersTable, studentsTable, usersTable,
 } from "@workspace/db";
 import { authenticate } from "../middlewares/auth";
+import { verifyToken } from "../lib/jwt";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -15,9 +16,51 @@ import { authenticateApplicant } from "./applicant-auth";
 import { generateAssistantResponse } from "../services/aiService";
 
 const router: IRouter = Router();
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[char]!);
+}
 const statuses = ["draft", "submitted", "verification", "review", "approved", "rejected", "waitlisted", "correction_requested"] as const;
 const staff = authenticate;
 const canReview = (req: any) => ["super_admin", "admin", "secretary", "admission_officer"].includes(req.user?.role);
+
+// Applicant sessions and staff sessions use separate session stores.
+// Each branch delegates to its existing middleware for session validation.
+const admissionsAccess = (req: any, res: any, next: any): void => {
+  const header = req.headers.authorization;
+  if (!header?.startsWith("Bearer ")) {
+    res.status(401).json({ error: "Authentication required" });
+    return;
+  }
+  let payload: any;
+  try {
+    payload = verifyToken(header.slice(7));
+  } catch {
+    res.status(401).json({ error: "Invalid or expired token" });
+    return;
+  }
+  if (payload.role === "applicant") {
+    authenticateApplicant(req, res, next);
+    return;
+  }
+  authenticate(req, res, (err?: any) => {
+    if (err) { next(err); return; }
+    if (!canReview(req)) {
+      res.status(403).json({ error: "Admission review permission required" });
+      return;
+    }
+    next();
+  });
+};
+
+const applicationAccessAllowed = (req: any, application: any): boolean =>
+  req.applicantId === undefined || application.applicantId === req.applicantId;
 const documentTypes = ["passport_photo", "signature", "10th_certificate", "12th_certificate", "transfer_certificate", "migration_certificate", "identity_proof", "category_certificate", "income_certificate", "other"];
 const storageDir = path.resolve(process.cwd(), "uploads", "admissions");
 
@@ -45,7 +88,6 @@ router.post("/admissions/applications", async (req, res): Promise<void> => {
     .where(and(eq(admissionApplicationsTable.email, normalizedEmail), eq(admissionApplicationsTable.program, body.program),
       or(eq(admissionApplicationsTable.status, "submitted"), eq(admissionApplicationsTable.status, "approved"))));
   if (duplicate) { res.status(409).json({ error: "A submitted application already exists for this email and program." }); return; }
-  const [applicant] = await db.select({ id: applicantAccountsTable.id }).from(applicantAccountsTable).where(eq(applicantAccountsTable.email, normalizedEmail));
   const applicationId = `APP-${new Date().getFullYear()}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
   const referenceNumber = `REF-${crypto.randomBytes(5).toString("hex").toUpperCase()}`;
   const [application] = await db.insert(admissionApplicationsTable).values({
@@ -53,7 +95,7 @@ router.post("/admissions/applications", async (req, res): Promise<void> => {
     phone: body.phone ?? "", guardianName: body.guardianName ?? null, guardianPhone: body.guardianPhone ?? null,
     address: body.address ?? null, qualification: body.qualification ?? null, program: body.program,
     documents: body.documents ?? {}, declarationAccepted: Boolean(body.declarationAccepted),
-    status: body.submit ? "submitted" : "draft", submittedAt: body.submit ? new Date() : null, applicantId: applicant?.id ?? null,
+    status: body.submit ? "submitted" : "draft", submittedAt: body.submit ? new Date() : null, applicantId: null,
   }).returning();
   await db.insert(admissionEventsTable).values({ applicationId: application.id, event: body.submit ? "Application submitted" : "Draft saved" });
   if (body.submit) {
@@ -63,10 +105,63 @@ router.post("/admissions/applications", async (req, res): Promise<void> => {
   res.status(201).json(view(application));
 });
 
+// Link a public application only when an authenticated account has verified
+// the same email address. Never link based on a public email match alone.
+router.post("/admissions/applications/:applicationId/link", authenticateApplicant, async (req, res): Promise<void> => {
+  const applicantId = req.applicantId!;
+  const [account] = await db.select().from(applicantAccountsTable)
+    .where(eq(applicantAccountsTable.id, applicantId));
+
+  if (!account || !account.emailVerified) {
+    res.status(403).json({ error: "Verify your account email before linking an application." });
+    return;
+  }
+
+  const [application] = await db.select().from(admissionApplicationsTable)
+    .where(eq(admissionApplicationsTable.applicationId, String(req.params.applicationId)));
+
+  if (!application) {
+    res.status(404).json({ error: "Application not found." });
+    return;
+  }
+  if (application.applicantId === applicantId) {
+    res.json({ message: "Application is already linked to your account." });
+    return;
+  }
+  if (application.applicantId !== null ||
+      application.email.trim().toLowerCase() !== account.email.trim().toLowerCase()) {
+    res.status(403).json({ error: "Application cannot be linked to this account." });
+    return;
+  }
+
+  const [linked] = await db.update(admissionApplicationsTable)
+    .set({ applicantId })
+    .where(and(
+      eq(admissionApplicationsTable.id, application.id),
+      isNull(admissionApplicationsTable.applicantId),
+      eq(admissionApplicationsTable.email, application.email),
+    ))
+    .returning({ id: admissionApplicationsTable.id });
+
+  if (!linked) {
+    res.status(409).json({ error: "Application changed. Refresh and try again." });
+    return;
+  }
+
+  await db.insert(admissionEventsTable).values({
+    applicationId: application.id,
+    event: "Application linked to verified applicant account",
+  });
+  res.json({ message: "Application linked successfully." });
+});
+
 // ─── Applicant dashboard ──────────────────────────────────────────────────────
-router.get("/admissions/applications/:applicationId/dashboard", async (req, res): Promise<void> => {
+router.get("/admissions/applications/:applicationId/dashboard", admissionsAccess, async (req, res): Promise<void> => {
   const [application] = await db.select().from(admissionApplicationsTable).where(eq(admissionApplicationsTable.applicationId, String(req.params.applicationId)));
   if (!application) { res.status(404).json({ error: "Application not found" }); return; }
+  if (!applicationAccessAllowed(req, application)) {
+    res.status(403).json({ error: "Application access denied" }); return;
+  }
   const [documents, events, interviews, tests, notifications, academicAssignments] = await Promise.all([
     db.select().from(admissionDocumentsTable).where(eq(admissionDocumentsTable.applicationId, application.id)).orderBy(desc(admissionDocumentsTable.createdAt)),
     db.select().from(admissionEventsTable).where(eq(admissionEventsTable.applicationId, application.id)).orderBy(desc(admissionEventsTable.createdAt)),
@@ -97,7 +192,7 @@ router.patch("/admissions/applications/:applicationId/profile", authenticateAppl
 });
 
 // ─── Document upload (base64 + progress via XHR) ─────────────────────────────
-router.post("/admissions/applications/:applicationId/documents", async (req, res): Promise<void> => {
+router.post("/admissions/applications/:applicationId/documents", admissionsAccess, async (req, res): Promise<void> => {
   const { documentType, fileName, mimeType, fileData } = req.body ?? {};
   if (!documentTypes.includes(documentType) || typeof fileName !== "string" || typeof mimeType !== "string" || typeof fileData !== "string") {
     res.status(400).json({ error: "Document type, file name, MIME type, and base64 file data are required." }); return;
@@ -117,6 +212,9 @@ router.post("/admissions/applications/:applicationId/documents", async (req, res
   if (!validSignature) { res.status(415).json({ error: "Document content does not match its declared type." }); return; }
   const [application] = await db.select().from(admissionApplicationsTable).where(eq(admissionApplicationsTable.applicationId, String(req.params.applicationId)));
   if (!application) { res.status(404).json({ error: "Application not found" }); return; }
+  if (!applicationAccessAllowed(req, application)) {
+    res.status(403).json({ error: "Application access denied" }); return;
+  }
   const [duplicate] = await db.select().from(admissionDocumentsTable).where(and(eq(admissionDocumentsTable.applicationId, application.id), eq(admissionDocumentsTable.documentType, documentType)));
   if (duplicate) { res.status(409).json({ error: "A document of this type already exists. Use the replace endpoint instead." }); return; }
   await fs.mkdir(storageDir, { recursive: true });
@@ -130,37 +228,89 @@ router.post("/admissions/applications/:applicationId/documents", async (req, res
 });
 
 // ─── Document replace ─────────────────────────────────────────────────────────
-router.put("/admissions/applications/:applicationId/documents/:documentType", async (req, res): Promise<void> => {
+router.put("/admissions/applications/:applicationId/documents/:documentType", admissionsAccess, async (req, res): Promise<void> => {
   const { fileName, mimeType, fileData } = req.body ?? {};
   const [application] = await db.select().from(admissionApplicationsTable).where(eq(admissionApplicationsTable.applicationId, String(req.params.applicationId)));
   if (!application || typeof fileName !== "string" || typeof mimeType !== "string" || typeof fileData !== "string") {
     res.status(400).json({ error: "Valid application and document payload required." }); return;
   }
+  if (!documentTypes.includes(String(req.params.documentType)) ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(fileData) || fileData.length % 4 !== 0) {
+    res.status(400).json({ error: "Invalid document type or base64 data." }); return;
+  }
+  if (!applicationAccessAllowed(req, application)) {
+    res.status(403).json({ error: "Application access denied" }); return;
+  }
   const buffer = Buffer.from(fileData, "base64");
-  if (buffer.length > 5 * 1024 * 1024 || !["image/jpeg", "image/png", "application/pdf"].includes(mimeType)) {
-    res.status(400).json({ error: "Unsupported document or file size." }); return;
+  if (buffer.length > 5 * 1024 * 1024) {
+    res.status(413).json({ error: "Documents must be 5 MB or smaller." }); return;
+  }
+  if (!["image/jpeg", "image/png", "application/pdf"].includes(mimeType)) {
+    res.status(415).json({ error: "Only PDF, JPEG, and PNG documents are supported." }); return;
+  }
+  const validSignature =
+    (mimeType === "application/pdf" && buffer.subarray(0, 5).toString() === "%PDF-") ||
+    (mimeType === "image/png" && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) ||
+    (mimeType === "image/jpeg" && buffer.subarray(0, 3).equals(Buffer.from([255, 216, 255])));
+  if (!validSignature) {
+    res.status(415).json({ error: "Document content does not match its declared type." }); return;
+  }
+  const safeName = path.basename(fileName).replace(/[^\w.\- ]/g, "_").slice(0, 180);
+  if (!safeName || safeName === "." || safeName === "..") {
+    res.status(400).json({ error: "Invalid file name." }); return;
   }
   const [old] = await db.select().from(admissionDocumentsTable).where(and(eq(admissionDocumentsTable.applicationId, application.id), eq(admissionDocumentsTable.documentType, String(req.params.documentType))));
-  if (old) {
-    await db.delete(admissionDocumentsTable).where(eq(admissionDocumentsTable.id, old.id));
-    await fs.rm(path.join(storageDir, old.storageKey), { force: true });
-  }
   await fs.mkdir(path.join(storageDir, application.applicationId), { recursive: true });
-  const storageKey = `${application.applicationId}/${crypto.randomUUID()}-${path.basename(fileName)}`;
-  await fs.writeFile(path.join(storageDir, storageKey), buffer);
-  const [document] = await db.insert(admissionDocumentsTable).values({ applicationId: application.id, documentType: req.params.documentType, fileName: path.basename(fileName), mimeType, fileSize: buffer.length, storageKey }).returning();
-  await db.insert(admissionEventsTable).values({ applicationId: application.id, event: `Document replaced: ${req.params.documentType}` });
+  const storageKey = `${application.applicationId}/${crypto.randomUUID()}-${safeName}`;
+  const newPath = path.join(storageDir, storageKey);
+  await fs.writeFile(newPath, buffer);
+
+  let document;
+  try {
+    if (old) {
+      const [updated] = await db.update(admissionDocumentsTable)
+        .set({ fileName: safeName, mimeType, fileSize: buffer.length, storageKey, verificationStatus: "pending", reviewerComment: null, reviewedBy: null, reviewedAt: null })
+        .where(eq(admissionDocumentsTable.id, old.id))
+        .returning();
+      if (!updated) throw new Error("Document replacement update failed");
+      document = updated;
+    } else {
+      const [inserted] = await db.insert(admissionDocumentsTable).values({ applicationId: application.id, documentType: req.params.documentType, fileName: safeName, mimeType, fileSize: buffer.length, storageKey }).returning();
+      document = inserted;
+    }
+    await db.insert(admissionEventsTable).values({ applicationId: application.id, event: `Document replaced: ${req.params.documentType}` });
+  } catch (error) {
+    await fs.rm(newPath, { force: true }).catch(() => {});
+    throw error;
+  }
+
+  if (old) {
+    await fs.rm(path.join(storageDir, old.storageKey), { force: true }).catch(() => {});
+  }
   res.json(document);
 });
 
 // ─── Document download (ownership enforced) ───────────────────────────────────
-router.get("/admissions/documents/:id/download", authenticateApplicant, async (req, res): Promise<void> => {
-  const [document] = await db.select().from(admissionDocumentsTable).where(eq(admissionDocumentsTable.id, Number(req.params.id)));
+router.get("/admissions/documents/:id/download", admissionsAccess, async (req, res): Promise<void> => {
+  const documentId = Number(req.params.id);
+  if (!Number.isSafeInteger(documentId) || documentId <= 0) {
+    res.status(400).json({ error: "Invalid document ID" }); return;
+  }
+  const [document] = await db.select().from(admissionDocumentsTable).where(eq(admissionDocumentsTable.id, documentId));
   if (!document) { res.status(404).json({ error: "Document not found" }); return; }
-  const applicantId = req.applicantId!;
-  const [owned] = await db.select({ id: admissionApplicationsTable.id }).from(admissionApplicationsTable)
-    .where(and(eq(admissionApplicationsTable.id, document.applicationId), eq(admissionApplicationsTable.applicantId, applicantId)));
-  if (!owned && !canReview(req)) { res.status(403).json({ error: "Document access denied" }); return; }
+
+  if (req.applicantId) {
+    const [owned] = await db.select({ id: admissionApplicationsTable.id })
+      .from(admissionApplicationsTable)
+      .where(and(
+        eq(admissionApplicationsTable.id, document.applicationId),
+        eq(admissionApplicationsTable.applicantId, req.applicantId),
+      ));
+    if (!owned) { res.status(403).json({ error: "Document access denied" }); return; }
+  } else if (!canReview(req)) {
+    res.status(403).json({ error: "Admission review permission required" }); return;
+  }
+
   const filePath = path.join(storageDir, document.storageKey);
   try { await fs.access(filePath); } catch { res.status(404).json({ error: "File not found on storage" }); return; }
   res.download(filePath, document.fileName);
@@ -168,7 +318,12 @@ router.get("/admissions/documents/:id/download", authenticateApplicant, async (r
 
 // ─── Document delete (ownership enforced) ─────────────────────────────────────
 router.delete("/admissions/documents/:id", authenticateApplicant, async (req, res): Promise<void> => {
-  const [document] = await db.select().from(admissionDocumentsTable).where(eq(admissionDocumentsTable.id, Number(req.params.id)));
+  const documentId = Number(req.params.id);
+  if (!Number.isSafeInteger(documentId) || documentId <= 0) {
+    res.status(400).json({ error: "Invalid document ID" });
+    return;
+  }
+  const [document] = await db.select().from(admissionDocumentsTable).where(eq(admissionDocumentsTable.id, documentId));
   if (!document) { res.status(404).json({ error: "Document not found" }); return; }
   const applicantId = req.applicantId!;
   const [owned] = await db.select({ id: admissionApplicationsTable.id }).from(admissionApplicationsTable)
@@ -192,9 +347,12 @@ router.patch("/admissions/documents/:id/verify", staff, async (req, res): Promis
 });
 
 // ─── Single application lookup ─────────────────────────────────────────────────
-router.get("/admissions/applications/:applicationId", async (req, res): Promise<void> => {
+router.get("/admissions/applications/:applicationId", admissionsAccess, async (req, res): Promise<void> => {
   const [application] = await db.select().from(admissionApplicationsTable).where(eq(admissionApplicationsTable.applicationId, String(req.params.applicationId)));
   if (!application) { res.status(404).json({ error: "Application not found" }); return; }
+  if (!applicationAccessAllowed(req, application)) {
+    res.status(403).json({ error: "Application access denied" }); return;
+  }
   const events = await db.select().from(admissionEventsTable).where(eq(admissionEventsTable.applicationId, application.id)).orderBy(desc(admissionEventsTable.createdAt));
   res.json({ application: view(application), events });
 });
@@ -300,19 +458,31 @@ router.get("/admissions/export.xlsx", staff, async (req, res): Promise<void> => 
 });
 
 // ─── Letter generation (printable HTML PDF-ready) ─────────────────────────────
-router.get("/admissions/applications/:applicationId/letter", async (req, res): Promise<void> => {
+router.get("/admissions/applications/:applicationId/letter", admissionsAccess, async (req, res): Promise<void> => {
   const [application] = await db.select().from(admissionApplicationsTable).where(eq(admissionApplicationsTable.applicationId, String(req.params.applicationId)));
   if (!application) { res.status(404).json({ error: "Application not found" }); return; }
-  const letterRef = `LETTER-${application.referenceNumber}-${Date.now()}`;
+  if (!applicationAccessAllowed(req, application)) {
+    res.status(403).json({ error: "Application access denied" }); return;
+  }
+  if (!["approved", "rejected", "waitlisted"].includes(application.status) &&
+      req.applicantId !== undefined) {
+    res.status(403).json({ error: "Admission decision letter is not available yet" }); return;
+  }
+  const safeApplicantName = escapeHtml(application.applicantName);
+  const safeProgram = escapeHtml(application.program);
+  const safeApplicationId = escapeHtml(application.applicationId);
+  const safeReferenceNumber = escapeHtml(application.referenceNumber);
+  const safeStatus = escapeHtml(application.status);
+  const letterRef = escapeHtml(`LETTER-${application.referenceNumber}-${Date.now()}`);
   const date = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
   const statusMap: Record<string, { title: string; body: string }> = {
-    approved: { title: "Admission Offer Letter", body: `Congratulations! We are pleased to offer you admission to the <strong>${application.program}</strong> programme. Please complete fee payment and document verification within 15 days. Your student portal credentials will be sent separately.` },
-    rejected: { title: "Admission Decision Letter", body: `We regret to inform you that after careful review of your application, we are unable to offer admission to the <strong>${application.program}</strong> programme at this time. We encourage you to consider reapplying in the next cycle.` },
-    waitlisted: { title: "Waitlist Letter", body: `Your application for <strong>${application.program}</strong> has been placed on the waitlist. You will be notified immediately if a seat becomes available. This letter serves as confirmation of your waitlist status.` },
-    default: { title: "Admission Status Letter", body: `This letter confirms that your application for <strong>${application.program}</strong> is currently under review with status: <strong>${application.status}</strong>.` },
+    approved: { title: "Admission Offer Letter", body: `Congratulations! We are pleased to offer you admission to the <strong>${safeProgram}</strong> programme. Please complete fee payment and document verification within 15 days. Your student portal credentials will be sent separately.` },
+    rejected: { title: "Admission Decision Letter", body: `We regret to inform you that after careful review of your application, we are unable to offer admission to the <strong>${safeProgram}</strong> programme at this time. We encourage you to consider reapplying in the next cycle.` },
+    waitlisted: { title: "Waitlist Letter", body: `Your application for <strong>${safeProgram}</strong> has been placed on the waitlist. You will be notified immediately if a seat becomes available. This letter serves as confirmation of your waitlist status.` },
+    default: { title: "Admission Status Letter", body: `This letter confirms that your application for <strong>${safeProgram}</strong> is currently under review with status: <strong>${application.status}</strong>.` },
   };
   const letter = statusMap[application.status] ?? statusMap.default;
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:Georgia,serif;max-width:720px;margin:40px auto;padding:40px;color:#1a1a1a}h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}.detail{margin:4px 0}.footer{margin-top:60px;border-top:1px solid #ccc;padding-top:20px;font-size:12px;color:#555}@media print{body{margin:0}button{display:none}}</style></head><body><button onclick="window.print()" style="float:right;padding:8px 16px;background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer">Print / Save PDF</button><p style="color:#666;font-size:13px">${date}</p><h1>${letter.title}</h1><p>Dear <strong>${application.applicantName}</strong>,</p><p>${letter.body}</p><table style="margin:24px 0;border-collapse:collapse;width:100%">${[["Application ID", application.applicationId], ["Reference Number", application.referenceNumber], ["Programme", application.program], ["Status", application.status], ["Letter Reference", letterRef]].map(([k, v]) => `<tr><td style="padding:6px 12px;border:1px solid #ddd;background:#f9f9f9;font-weight:600;width:40%">${k}</td><td style="padding:6px 12px;border:1px solid #ddd">${v}</td></tr>`).join("")}</table><p>This is a computer-generated letter. For queries contact the Admissions Office.</p><div class="footer"><strong>Nexus College ERP</strong> · Admissions Office · admissions@nexuscollege.edu</div></body></html>`;
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:Georgia,serif;max-width:720px;margin:40px auto;padding:40px;color:#1a1a1a}h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}.detail{margin:4px 0}.footer{margin-top:60px;border-top:1px solid #ccc;padding-top:20px;font-size:12px;color:#555}@media print{body{margin:0}button{display:none}}</style></head><body><button onclick="window.print()" style="float:right;padding:8px 16px;background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer">Print / Save PDF</button><p style="color:#666;font-size:13px">${date}</p><h1>${letter.title}</h1><p>Dear <strong>${safeApplicantName}</strong>,</p><p>${letter.body}</p><table style="margin:24px 0;border-collapse:collapse;width:100%">${[["Application ID", safeApplicationId], ["Reference Number", safeReferenceNumber], ["Programme", safeProgram], ["Status", safeStatus], ["Letter Reference", letterRef]].map(([k, v]) => `<tr><td style="padding:6px 12px;border:1px solid #ddd;background:#f9f9f9;font-weight:600;width:40%">${escapeHtml(k)}</td><td style="padding:6px 12px;border:1px solid #ddd">${escapeHtml(v)}</td></tr>`).join("")}</table><p>This is a computer-generated letter. For queries contact the Admissions Office.</p><div class="footer"><strong>Nexus College ERP</strong> · Admissions Office · admissions@nexuscollege.edu</div></body></html>`;
   res.type("text/html").send(html);
 });
 

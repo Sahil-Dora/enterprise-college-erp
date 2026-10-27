@@ -23,25 +23,26 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { crudErrorMessage } from "@/lib/crud-validation";
 
 export default function StudentProfile() {
   const params = useParams();
   const id = Number(params.id);
 
-  const { data: student, isLoading: isStudentLoading } = useGetStudent(id, {
+  const { data: student, isLoading: isStudentLoading, isError: isStudentError, error: studentError, refetch: refetchStudent } = useGetStudent(id, {
     query: { enabled: !!id, queryKey: getGetStudentQueryKey(id) }
   });
 
-  const { data: courses, isLoading: isCoursesLoading } = useGetStudentCourses(id, {
+  const { data: courses, isLoading: isCoursesLoading, isError: isCoursesError, refetch: refetchCourses } = useGetStudentCourses(id, {
     query: { enabled: !!id, queryKey: getGetStudentCoursesQueryKey(id) }
   });
 
-  const { data: attendance, isLoading: isAttendanceLoading } = useGetAttendanceSummary(
+  const { data: attendance, isLoading: isAttendanceLoading, isError: isAttendanceError, refetch: refetchAttendance } = useGetAttendanceSummary(
     { studentId: id },
     { query: { enabled: !!id, queryKey: getGetAttendanceSummaryQueryKey({ studentId: id }) } }
   );
 
-  const { data: feesData, isLoading: isFeesLoading } = useListFees(
+  const { data: feesData, isLoading: isFeesLoading, isError: isFeesError, refetch: refetchFees } = useListFees(
     { studentId: id },
     { query: { enabled: !!id, queryKey: getListFeesQueryKey({ studentId: id }) } }
   );
@@ -51,6 +52,15 @@ export default function StudentProfile() {
       <div className="space-y-6">
         <div className="flex items-center gap-4"><Skeleton className="h-10 w-10" /><Skeleton className="h-8 w-64" /></div>
         <Skeleton className="h-[300px] w-full" />
+      </div>
+    );
+  }
+
+  if (isStudentError) {
+    return (
+      <div role="alert" className="space-y-3">
+        <p className="text-destructive">{crudErrorMessage(studentError, "Unable to load this student.")}</p>
+        <Button variant="outline" onClick={() => refetchStudent()}>Retry</Button>
       </div>
     );
   }
@@ -156,6 +166,10 @@ export default function StudentProfile() {
                       <TableBody>
                         {isCoursesLoading ? (
                           <TableRow><TableCell colSpan={4}><Skeleton className="h-10 w-full" /></TableCell></TableRow>
+                        ) : isCoursesError ? (
+                          <TableRow><TableCell colSpan={4} className="text-center text-destructive">
+                            Unable to load courses. <Button variant="link" onClick={() => refetchCourses()}>Retry</Button>
+                          </TableCell></TableRow>
                         ) : courses?.length === 0 ? (
                           <TableRow><TableCell colSpan={4} className="text-center py-6 text-muted-foreground">No courses enrolled</TableCell></TableRow>
                         ) : (
@@ -187,6 +201,10 @@ export default function StudentProfile() {
                   <div className="space-y-6">
                     {isAttendanceLoading ? (
                       <Skeleton className="h-40 w-full" />
+                    ) : isAttendanceError ? (
+                      <p role="alert" className="text-center text-destructive">
+                        Unable to load attendance. <Button variant="link" onClick={() => refetchAttendance()}>Retry</Button>
+                      </p>
                     ) : (attendance as any)?.length === 0 ? (
                       <p className="text-center py-6 text-muted-foreground border rounded-md border-dashed">No attendance records found</p>
                     ) : (
@@ -237,6 +255,10 @@ export default function StudentProfile() {
                       <TableBody>
                         {isFeesLoading ? (
                           <TableRow><TableCell colSpan={4}><Skeleton className="h-10 w-full" /></TableCell></TableRow>
+                        ) : isFeesError ? (
+                          <TableRow><TableCell colSpan={4} className="text-center text-destructive">
+                            Unable to load fee records. <Button variant="link" onClick={() => refetchFees()}>Retry</Button>
+                          </TableCell></TableRow>
                         ) : feesData?.data.length === 0 ? (
                           <TableRow><TableCell colSpan={4} className="text-center py-6 text-muted-foreground">No fee records found</TableCell></TableRow>
                         ) : (

@@ -16,16 +16,17 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { crudErrorMessage } from "@/lib/crud-validation";
 
 export default function FacultyProfile() {
   const params = useParams();
   const id = Number(params.id);
 
-  const { data: faculty, isLoading: isFacultyLoading } = useGetFaculty(id, {
+  const { data: faculty, isLoading: isFacultyLoading, isError: isFacultyError, error: facultyError, refetch: refetchFaculty } = useGetFaculty(id, {
     query: { enabled: !!id, queryKey: getGetFacultyQueryKey(id) }
   });
 
-  const { data: courses, isLoading: isCoursesLoading } = useGetFacultyCourses(id, {
+  const { data: courses, isLoading: isCoursesLoading, isError: isCoursesError, refetch: refetchCourses } = useGetFacultyCourses(id, {
     query: { enabled: !!id, queryKey: getGetFacultyCoursesQueryKey(id) }
   });
 
@@ -34,6 +35,15 @@ export default function FacultyProfile() {
       <div className="space-y-6">
         <div className="flex items-center gap-4"><Skeleton className="h-10 w-10" /><Skeleton className="h-8 w-64" /></div>
         <Skeleton className="h-[300px] w-full" />
+      </div>
+    );
+  }
+
+  if (isFacultyError) {
+    return (
+      <div role="alert" className="space-y-3">
+        <p className="text-destructive">{crudErrorMessage(facultyError, "Unable to load this faculty member.")}</p>
+        <Button variant="outline" onClick={() => refetchFaculty()}>Retry</Button>
       </div>
     );
   }
@@ -130,6 +140,10 @@ export default function FacultyProfile() {
                   <TableBody>
                     {isCoursesLoading ? (
                       <TableRow><TableCell colSpan={4}><Skeleton className="h-10 w-full" /></TableCell></TableRow>
+                    ) : isCoursesError ? (
+                      <TableRow><TableCell colSpan={4} className="text-center text-destructive">
+                        Unable to load courses. <Button variant="link" onClick={() => refetchCourses()}>Retry</Button>
+                      </TableCell></TableRow>
                     ) : courses?.length === 0 ? (
                       <TableRow><TableCell colSpan={4} className="text-center py-6 text-muted-foreground">No assigned courses</TableCell></TableRow>
                     ) : (
