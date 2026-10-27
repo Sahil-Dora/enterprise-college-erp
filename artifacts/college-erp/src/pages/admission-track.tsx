@@ -40,7 +40,7 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-function uploadWithProgress(url: string, body: object, onProgress: (pct: number) => void, signal: AbortSignal): Promise<Response> {
+function uploadWithProgress(url: string, body: object, token: string, onProgress: (pct: number) => void, signal: AbortSignal): Promise<Response> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     signal.addEventListener("abort", () => { xhr.abort(); reject(new DOMException("Aborted", "AbortError")); });
@@ -49,6 +49,7 @@ function uploadWithProgress(url: string, body: object, onProgress: (pct: number)
     xhr.addEventListener("error", () => reject(new Error("Network error")));
     xhr.open("POST", url);
     xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     xhr.send(JSON.stringify(body));
   });
 }
@@ -72,7 +73,7 @@ export default function AdmissionTrack() {
     if (!id.trim()) return;
     setLoading(true);
     try {
-      const r = await fetch(`/api/admissions/applications/${encodeURIComponent(id.trim())}/dashboard`);
+      const r = await fetch(`/api/admissions/applications/${encodeURIComponent(id.trim())}/dashboard`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       const d = await r.json();
       if (r.ok) {
         setData(d);
@@ -107,6 +108,7 @@ export default function AdmissionTrack() {
 
   const startUpload = async (item: UploadItem) => {
     if (!appId) { toast({ title: "No application ID", variant: "destructive" }); return; }
+    if (!token) { toast({ title: "Sign in to upload documents", variant: "destructive" }); return; }
     const ac = new AbortController();
     setUploadQueue((q) => q.map((i) => i.id === item.id ? { ...i, status: "uploading", abortController: ac } : i));
     try {
@@ -121,8 +123,8 @@ export default function AdmissionTrack() {
       let pct = 0;
       const fakeProgress = setInterval(() => { pct = Math.min(pct + 10, 90); setUploadQueue((q) => q.map((i) => i.id === item.id ? { ...i, progress: pct } : i)); }, 80);
       const r = exists
-        ? await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ac.signal })
-        : await uploadWithProgress(url, body, (p) => { clearInterval(fakeProgress); setUploadQueue((q) => q.map((i) => i.id === item.id ? { ...i, progress: p } : i)); }, ac.signal);
+        ? await fetch(url, { method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body), signal: ac.signal })
+        : await uploadWithProgress(url, body, token, (p) => { clearInterval(fakeProgress); setUploadQueue((q) => q.map((i) => i.id === item.id ? { ...i, progress: p } : i)); }, ac.signal);
       clearInterval(fakeProgress);
       if (r.ok) {
         setUploadQueue((q) => q.map((i) => i.id === item.id ? { ...i, status: "done", progress: 100 } : i));
@@ -396,10 +398,27 @@ export default function AdmissionTrack() {
             <CardHeader><CardTitle>Admission letter</CardTitle></CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground mb-3">Your admission decision letter is ready for download.</p>
-              <Button asChild variant="outline">
-                <a href={`/api/admissions/applications/${application.applicationId}/letter`} target="_blank" rel="noopener noreferrer">
-                  <Download className="mr-2 h-4 w-4" />View / Print letter
-                </a>
+              <Button variant="outline" onClick={async () => {
+                if (!token) {
+                  toast({ title: "Sign in to download your letter", variant: "destructive" });
+                  return;
+                }
+                try {
+                  const response = await fetch(`/api/admissions/applications/${encodeURIComponent(application.applicationId)}/letter`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                  });
+                  if (!response.ok) {
+                    toast({ title: "Download failed", description: `Request failed (${response.status})`, variant: "destructive" });
+                    return;
+                  }
+                  const objectUrl = URL.createObjectURL(await response.blob());
+                  window.open(objectUrl, "_blank", "noopener,noreferrer");
+                  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+                } catch {
+                  toast({ title: "Download failed", description: "Could not retrieve your letter.", variant: "destructive" });
+                }
+              }}>
+                <Download className="mr-2 h-4 w-4" />View / Print letter
               </Button>
             </CardContent>
           </Card>

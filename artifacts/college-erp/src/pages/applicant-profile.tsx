@@ -54,7 +54,7 @@ export default function ApplicantProfile() {
     const savedId = sessionStorage.getItem("applicant_app_id") ?? localStorage.getItem("applicant_app_id");
     if (!savedId) { setLoading(false); return; }
     setApplicationId(savedId);
-    fetch(`/api/admissions/applications/${encodeURIComponent(savedId)}/dashboard`)
+    fetch(`/api/admissions/applications/${encodeURIComponent(savedId)}/dashboard`, { headers: { Authorization: `Bearer ${getApplicantToken()}` } })
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
         if (data?.application) {
